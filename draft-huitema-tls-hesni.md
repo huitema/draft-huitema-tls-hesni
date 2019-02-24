@@ -1,11 +1,11 @@
 %%%
-    Title = "Hidden Encrypted SNI (HESNI)"
+    Title = "Hidden Encrypted SNI in TLS 1.3 (HESNI)"
     abbrev = "HESNI"
     category = "experimental"
     docName= "draft-huitema-tls-hesni-latest"
     ipr = "trust200902"
     area = "Network"
-    date = 2019-02-23T00:00:00Z
+    date = 2019-02-24T00:00:00Z
     [pi]
     toc = "yes"
     compact = "yes"
@@ -47,15 +47,25 @@ There is a risk that censors will program firewalls to block all connections usi
 We develop here the Hidden ESNI (HESNI) alternative, in which the encrypted SNI is hidden in the
 Client Hello, in an attempt to evade detection by censors and firewalls.
 
-HESNI choses different design tradeoffs than the ESNI draft. With the draft ESNI,
+This draft isn't meant to replace the ESNI draft, but only to experiment with a stealthier 
+alternative. HESNI choses different design tradeoffs than the ESNI draft. With the draft ESNI,
 the server can find in the ESNI extension all information needed to retrieve the original SNI.
-In contrast, the server supporting HESNI has to perform "trial decryption" on the incoming connection
-attempts to find out whether HESNI is present.
+In contrast, the server participating in the HESNI experiment has to perform "trial decryption"
+on the incoming connection attempts to find out whether HESNI is present.
 
 The clients using HESNI hide the value of the key shares and the encrypted text in a small set of
 standard fields in the Client Hello and its extensions. These fields have a relatively small size,
-which limits the amount of data that can be conveyed. Given this small size, HESNI supports fewer
-options than ESNI.
+which limits the amount of data that can be conveyed, and also limits the number of algorithms
+used to encrypt the SNI in HESNI. For example, HESNI requires that the keys used to establish
+the SNI encryption secret are picked in the x25519 group [@?RFC7748]. Using different groups
+may become required over time, but would have to be defined in a different experiment.
+
+HESNI requires TLS 1.3 [@!RFC8446], in part because TLS 1.3 encrypts most of the server messages
+and thus provides an easier starting point than TLS 1.2. Defining an SNI encryption procedure for
+TLS 1.2 [@?RFC5246] would require further work, such as identifying suitable fields in TLS 1.2
+messages or finding a way to not send the private server's certificate in clear text. This would
+have to be explored in a separate experiment.
+
 
 # Conventions and Definitions
 
@@ -68,154 +78,124 @@ The key words “MUST”, “MUST NOT”, “REQUIRED”, “SHALL”, “SHALL NOT”, “SHOULD”, “S
 This document is designed to support the
 “Shared Mode” and “Split Mode” defined in section 3 of [@!ietf-tls-esni].
 
-First, the provider publishes a public key which is used for SNI encryption for all the domains
-for which it serves directly or indirectly (via Split mode). The key MAY be published in the
-DNS as defined in section 4 of [@!ietf-tls-esni]. The key MAY also be provisioned in the client
+First, the client facing server publishes at least one public key share, which we refer to as
+the "HESNI server key share".
+It will be used for SNI encryption for all the domains that the server
+serves directly or indirectly (via Split mode).
+
+This draft does not require that the HESNI server key share be kept secret from observers.
+The HESNI server key share MAY be published in the
+DNS as defined in section 4 of [@!ietf-tls-esni]. 
+The HESNI server key share MAY also be provisioned in the client
 through other mechanisms, such as for example software update of applications.
+Servers MAY attempt to hide their participation in the HESNI experiment 
+by restricting the publication of their HESNI key share to trusted clients.
 
-Instead of relying on a TLS extension, HESNI encodes its parameters in two selected fields
-of the ClientHello: 32 bytes of data are carried in the "Client random" parameter, and up to
-32 bytes are carried in the "legacy session ID" parameter. 
+Clients encode HESNI parameters in two selected fields
+of the ClientHello: the "Client random" parameter, and the
+"legacy session ID" parameter. 
 
-When a client wants to form a TLS connection to any of the domains served by an HESNI-supporting
-provider, it sets the “server_name” extension in the ClientHello to a cover value designating the
-client facing server, it encrypts the true extension using the provider’s public key, and it
-hides the encrypted value in the selected fields.
-
-The client facing server that receives the ClientHello will check whether the regular Encrypted
-Extension is present. If it is not, it checks whether the “server_name” extension matches one
-of the cover values specific to this client facing server. If that's the case, the server tries
+The client facing server that receives the ClientHello will check whether the Encrypted
+SNI (ESNI) extension is present. If it is not, the server tries
 to decrypt the value from the selected fields. If decryption is succesful, the server can either
 terminate the connection (in Shared Mode) or forward it to the backend server (in Split Mode).
-If the decryption fails, the server proceeds with the connection as specified TLS 1.3 [@?RFC8446].
+If the decryption fails, the server proceeds with the connection as specified in TLS 1.3 
+[@!RFC8446].
 
 # HESNI procedures
 
-The ESNI extension defined in [@!ietf-tls-esni] uses four parameters:
+The HESNI procedures use a single set of algorithms:
 
-* The cipher suite used to encrypt the SNI.
+* The HESNI server key share and client key share belong to the group x25519 [@?RFC7748].
 
-* The KeyShareEntry carrying the client's public ephemeral key shared used to derive the ESNI key.
+* The select hash function is SHA256
 
-* The record digest, which is a cryptographic hash of the ESNIKeys structure from which the ESNI
-  key was obtained.
+* The SNI will be encrypted using the AEAD algorithm AEAD_CHACHA20_POLY1305 [@?RFC8439].
 
-* The encrypted SNI.
 
-The HESNI procedure will not transmit the cipher suite or the record digest, in part
-to preserve the small amount of hiding spaceavailable in the ClientHello, and also because
-any "clear text" parameter could tip observers about the use of ESNI. Instead, clients
-will pick one of the ESNI keys advertise by the server. The server will use heuristics to try
-decryption with a first key, and if that fails try the other published keys in turn.
-
-The syntax and the size of the KeyShareEntry depends on the selected group. For X25519 the
-key size is 32 bytes, but for other groups it can be significantly larger: 56 bytes for
-X448, 64 bytes for secp256r1, and even more for other groups. That means the encoding of
-both the KeyShareEntry and the encrypted SNI would only fit in the 64 available bytes
-if we constrained HESNI to only use X25519. To avoid that, we decide that the KeyShareEntry
-selected for HESNI will always be the first KeyShareEntry listed by the client.
-
-For the purpose of the experiment, the ciphersuite will be
-a direct function of the group of the selected Key Share. The following table provides a list of
-the groups supported in the HESNI experiment, and the corresponding ciphersuite:
-```
-+-----------+------------------------------+
-| Group     | HESNI ciphersuite            |
-+-----------+------------------------------+
-| secp256r1 | TLS_AES_128_GCM_SHA256       |
-| secp384r1 | TLS_AES_256_GCM_SHA384       |
-| secp521r1 | TLS_AES_256_GCM_SHA384       |
-| x25519    | TLS_CHACHA20_POLY1305_SHA256 |
-| x448      | TLS_CHACHA20_POLY1305_SHA256 |
-| ffdhe2048 | TLS_AES_128_GCM_SHA384       |
-| ffdhe3072 | TLS_AES_256_GCM_SHA384       |
-| ffdhe4096 | TLS_AES_256_GCM_SHA384       |
-| ffdhe6144 | TLS_AES_256_GCM_SHA384       |
-| ffdhe8192 | TLS_AES_256_GCM_SHA384       |
-+-----------+------------------------------+
-```
 
 
 ## Client Behavior
 
-As specified in ection 5.1 of [@!ietf-tls-esni] the client MUST first select one
-of the server ESNIKeyShareEntry values and generate an (EC)DHE share
-in the matching group. That key share MUST be documented as the first entry
-in the KeyShare ClientHello extension. The client will then derive a shared
-secret from the selected ESNIKeyShareEntry of the server and the client generated
-KeyShare, and then derive an AEAD key and an AEAD IV from this
-shared secret using the process specified in section 5.1 of [@!ietf-tls-esni].
+The client who wants to joint a private server in the HESNI experiment MUST first
+select the corresponding client facing server, and obtain the HESNI server key share
+of the client facing server -- or select one of the available key shares if the
+server published several of them.
 
-To compute the Hidden ESNI value, the client will compose the ClientESNIInner
-structure as specified in section 5.1 of [@!ietf-tls-esni], and then encrypt
-it using the usual TLS 1.3 AEAD:
+* The client MAY obtain these key shares by looking for _esni TXT records
+  in the DNS entry of the server (per section  4 of [@!ietf-tls-esni]).
+
+* The client MUST only select key shares drawn from the x25519 group.
+
+The client then generate its own x25519 key share. The client MUST pick a new
+key share for each connection, using a CSRNG complaint with the requirements
+of [@!RFC8446]. The client derives the associated 32 bytes public key (section
+6.1 of [@?RFC7748]. The client then sets the value of the ClientHello.Random
+field to the 32 byte public key share value.
+
+* TODO: some bits in the x25519 public key share have fixed values. Should
+  we specify a masking process?
+
+The client will derive a shared secret by combining its own key share and 
+the selected HESNI server key share. It will then derive an AEAD key, an
+AEAD IV and HESNI nonce from this secret:
+
 ```
-   encrypted_sni = AEAD-Encrypt(key, iv, 
-                                ClientHello.KeyShareClientHello, ClientESNIInner)
+Zx = HKDF-Extract(0, Z)
+key = HKDF-Expand-Label(Zx, "hesni key", NULL, key_length)
+iv = HKDF-Expand-Label(Zx, "hesni iv", NULL, iv_length)
+nonce = HKDF-Expand-Label(Zx, "hesni nonce", NULL, 16)
 ```
-The length of the encrypted_sni value will be the sum of:
+Where:
 
-* ClientESNIInner.nonce: 16 bytes
+ * HKDF is the HMAC-based Extract-and-Expand Key Derivation Function
+   [@!RFC5869] derived from HMAC/SHA256.
+ * key_length is 32 bytes (256 bits) and IV length is 14 bytes (96 bits)
+   per definition of ChaCha20 & Poly1305 [@?RFC8439]
 
-* ClientESNIInner.PaddedServerNameList: padded length specified with ESNI key
-
-* AEAD tag: depend on AEAD algorithm, usually 16 bytes
-
-In order to ensure that the encrypted_sni fits in the 64 bytes available in the
-selected fields of the ClientHello, the server MUST specify a padded length
-of at most 32 bytes long. To simplify processing, the server SHOULD specify a
-padded length of exactly 32 bytes.
-
-Once the encrypted_sni is computed, the client resets the ClientRandom and
-legacySessionID fields of the message as follow:
-
-* ClientRandom value is set to the first 32 bytes of the encrypted SNI
-
-* legacySessionID is set to the remaining bytes of the encrypted SNI.
-
-In addition, the client MUST add to the ClientHello an SNI extension set to
-the "cover SNI" chosen by the server.
+To compute the encrypted SNI value, the client will proceed as follow:
+```
+paddedSNI = original SNI, padded with zeroes to a length of 16 bytes
+encrypted_sni = AEAD-Encrypt(key, iv, 
+                             ClientHello.KeyShareClientHello, paddedSNI)
+```
+The AEAD encrypt is applied as in TLS 1.3, using ChaCha20 & Poly1305.
+Encryption of the 16 bytes padded SNI results in a 32 bytes encrypted
+SNI, which is copied to the legacySessionID field of the client
+Hello.
 
 The client MUST ensure that the modified ClientRandom and legacySessionID
-values are used in the PSK Binder, per section 4.2.11.2 of [@!RFC8446].
-
+values are used when computing the handshake context and PSK binder per TLS 1.3.
 
 If the server does not negotiate TLS 1.3 or above, then the client
 MUST abort the connection with an "unsupported_version" alert.  If
 the server supports TLS 1.3, the client MUST check that the first 16 bytes
 of the ServerHello "ServerLegacySessionId" parameter match the
-value of the ClientESNIInner.nonce. If it doesn't, the client SHOULD
+value of the HESNI nonce. If it doesn't, the client SHOULD
 abort the session.
 
 ## Client Facing Server Behavior
 
 The client facing server that receives a client's first flight has to decide whether to
 attempt decryption of the HESNI, and what key to use. For the purpose of the
-HESNI experiment, the client facing server will:
+HESNI experiment, the client facing server will check whether the ESNI extension is
+present. If it is, the message will be processed per ESNI [@!ietf-tls-esni]. In
+the other cases, the server attempts to decrypt the SNI according to HESNI.
 
-1) Check that the ESNI extension is not present. 
+The server will try HESNI decryption using each of the published HESNI server key
+shares, until either one of the decryption succeeds, or all fail.
 
-2) Check that the SNI extension is present, and is set to one of the cover
-values supported by the server.
+* TODO: are we concerned about constant time decryption?
 
-3) Check that the KeyShare extension is present and that
-the group selected for the first KeyShareEntry matches at least one of the groups
-for which the server has published an ESNI key.
-
-If any of these tests fails, the server MUST NOT attempt HESNI decryption. If the tests
-succeed, the server has identified the client key share and the selected group.
-The server will try HESNI decryption using each of the published ESNI keys that
-matches the selected group, until either one of the decryption succeeds, or all fail.
 If no trial decryption is successful, the server processes the message as if HESNI
 was not in use.
 
 To perform trial decryption, the server effectively reverses the process used by the
-client to compute the encrypted ESNI. The trial decryption fails if the AEAD
+client to compute the encrypted SNI. The trial decryption fails if the AEAD
 decryption of the encrypted_sni fails. An error is detected if the AEAD decryption
 succeeds, but the padded length does not match the server specified value.
 
-As specified in section 5.2. of [@!ietf-tls-esni],
-upon determining the true SNI, the client-facing server then either
+Upon determining the true SNI, the client-facing server then either
 serves the connection directly (if in Shared Mode), in which case it
 executes the steps in the following section, or forwards the TLS
 connection to the backend server (if in Split Mode).  In the latter
@@ -224,18 +204,18 @@ blindly forwards them.
 
 ## Shared Mode Server Behavior
 
-A server operating in Shared Mode uses PaddedServerNameList.sni as if
+A server operating in Shared Mode uses the decrypted SNI as if
 it were the "server_name" extension to finish the handshake.  It
 SHOULD pad the Certificate message, via padding at the record layer,
 such that its length equals the size of the largest possible
-Certificate (message) covered by the same ESNI key.  Moreover, the
+Certificate (message) covered by the same HESNI key.  Moreover, the
 server MUST set the first 16 bytes of the "ServerLegacySessionId"
-to the value of ClientESNIInner.nonce.
+to the value of HESNI nonce derived from the shared HESNI secret.
 
 ## Split Mode Server Behavior
 
 In Split Mode, the backend server must know the value of
-ClientESNIInner.nonce to echo it back in the first 16 bytes
+HESNI nonce to echo it back in the first 16 bytes
 of the "ServerLegacySessionId". Appendix B of [@!ietf-tls-esni]
 describes one mechanism to do so.
 
@@ -243,9 +223,6 @@ describes one mechanism to do so.
 
 HESNI suffers from the same potential issues as explained in section 6 of
 [@!ietf-tls-esni]. 
-
-<TBD>
-<Something about NAT?>
 
 # Security considerations
 
@@ -255,26 +232,14 @@ difference: HESNI is designed to not "stick out", and thus might succeed
 even in the absence of large scale deployment of ESNI. There are however some
 specific issues.
 
-## Drawbacks of Conflating Session KeyShare and HESNI KeyShare
+## Drawbacks of using fixed algorithms
 
-We understand the drawbacks of conflating the selection of key share for HESNI and for the
-session. Among the known drawbacks:
-
-* There is a potential downgrade attack, in which the attacker provides the client with
-  a spoofed DNS record documenting ESNI encryption with a weaker group than preferred by
-  the server. The client would be tricked into selecting that group for both the HESNI key
-  and the session key.
-
-* Many clients document just one key share. If they want to use HESNI, they are constrained
-  to propose the same group for HESNI and for the session. This pushes all the private
-  servers to allow negotiation of the same group chosen by the client facing server.
-
-For the HESNI experiment, we intend to mitigate the first attack by server-side enforcement
-of acceptable groups. The server knows what groups were genuinely published in the DNS, or
-otherwise provisioned. It SHOULD refuse to accept attempts to use any other groups. We
-do not intend to mitigate the second issue, and will just accept the contraint that
-private servers cannot negotiate stronger encryption than accepted by the client facing
-server.
+The HESNI specification uses a fixed set of algorithms: x25519, chacha20,
+poly1035 and SHA256. This results in a simple specification and in a tight
+usage of available fields in the ClientHello and ServerHello. If any of
+these algorithm becomes unsuitable, due for example to progress in cryptoanalysis,
+the HESNI experiment described in this specification SHOULD be terminated,
+and a new specification SHOULD be developed.
 
 ## Drawbacks of Repurposing the Client Random
 
@@ -282,9 +247,7 @@ The ClientHello.Random field is used in TLS as a source of randomness when gener
 key material. According to annex C.1. of [@!RFC8446], this field should be filled with
 the output of a godd quality CSPRG, such as provided by the operating system. HESNI
 deviates from that recommendation, as it fills the ClientHello.Random field with
-the result of SNI encryption. However, this process probably meets the requirements
-of [@?RFC4086], since the encryption includes multiple sources of randomness, including
-the choice of the key shares and the value of the ClientESNIInner.nonce.
+the x25519 public key share of the client. (TODO: obfuscation of fixed parts?)
 
 # IANA Considerations
 
